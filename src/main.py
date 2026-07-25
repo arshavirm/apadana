@@ -27,7 +27,12 @@ class ApadanaApp(tk.Tk):
         self.geometry("980x680")
         self.minsize(760, 540)
 
-        self.iconphoto(False, tk.PhotoImage(file="src/logo.png"))
+        if getattr(sys, "frozen", False):
+            self.iconphoto(
+                False, tk.PhotoImage(file=os.path.join(sys._MEIPASS, "src/logo.png"))
+            )
+        else:
+            self.iconphoto(False, tk.PhotoImage(file="src/logo.png"))
 
         self.output_queue = queue.Queue()
         self.current_process = None
