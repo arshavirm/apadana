@@ -90,10 +90,9 @@ jobs:
           Priority: optional
           Architecture: amd64
           Installed-Size: ${SIZE_KB}
-          Depends: policykit-1
           Maintainer: ${{ env.MAINTAINER }}
           Description: Graphical apt package manager
-           A simple Tkinter GUI for browsing, installing, removing, and
+           A simple GUI software for browsing, installing, removing, and
            upgrading apt packages without using the terminal.
           EOF
 
