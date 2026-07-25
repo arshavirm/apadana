@@ -50,7 +50,7 @@ jobs:
 
       - name: Build standalone Linux executable with PyInstaller
         run: |
-          pyinstaller --onefile --windowed --name "${{ env.APP_NAME }}" "${{ env.ENTRY_FILE }}"
+          pyinstaller --onefile --add-data="src/logo.png:src" --windowed --name "${{ env.APP_NAME }}" "${{ env.ENTRY_FILE }}"
 
       - name: Verify binary was produced
         run: |
