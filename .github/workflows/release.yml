@@ -6,7 +6,7 @@ on:
   workflow_dispatch: {}
 
 env:
-  APP_NAME: Apadana        
+  APP_NAME: apadana        
   ENTRY_FILE: src/main.py
   MAINTAINER: "Arshavir Mirzakhani"
 
