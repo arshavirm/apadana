@@ -7,6 +7,8 @@ import threading
 import queue
 import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog
+import sys
+import os
 
 
 def build_privileged_command(cmd_list):
@@ -22,9 +24,10 @@ class ApadanaApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Apadana")
-        self.iconbitmap(None)
         self.geometry("980x680")
         self.minsize(760, 540)
+
+        self.iconphoto(False, tk.PhotoImage(file="src/logo.png"))
 
         self.output_queue = queue.Queue()
         self.current_process = None
