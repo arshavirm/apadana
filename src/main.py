@@ -49,7 +49,7 @@ class ApadanaApp(tk.Tk):
         style.configure("Treeview", rowheight=24)
 
         self.title_label = ttk.Label(
-            self, text="Apadana v1.0 - Arshavir Mirzakhani", justify="center"
+            self, text="Apadana v1.1 - Arshavir Mirzakhani", justify="center"
         ).pack()
 
         notebook = ttk.Notebook(self)
