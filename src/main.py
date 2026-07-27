@@ -12,12 +12,62 @@ import os
 
 
 def build_privileged_command(cmd_list):
-    if shutil.which("pkexec"):
-        return ["pkexec"] + cmd_list, False
-    elif shutil.which("sudo"):
+    if shutil.which("sudo"):
         return ["sudo", "-S"] + cmd_list, True
+    elif shutil.which("pkexec"):
+        return ["pkexec"] + cmd_list, False
     else:
         return cmd_list, False
+
+
+def verify_sudo_password(password):
+    if not shutil.which("sudo"):
+        return True
+    try:
+        proc = subprocess.run(
+            ["sudo", "-S", "-k", "-v"],
+            input=password + "\n",
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        return proc.returncode == 0
+    except Exception:
+        return False
+
+
+def prompt_for_root_password():
+    auth_root = tk.Tk()
+    auth_root.withdraw()
+
+    if not shutil.which("sudo"):
+        auth_root.destroy()
+        return None
+
+    password = None
+    while True:
+        password = simpledialog.askstring(
+            "Authentication Required",
+            "Apadana needs administrator access to manage software.\n"
+            "Enter your password to continue:",
+            show="*",
+            parent=auth_root,
+        )
+        if password is None:
+            auth_root.destroy()
+            sys.exit(0)
+
+        if verify_sudo_password(password):
+            break
+
+        messagebox.showerror(
+            "Authentication Failed",
+            "Incorrect password. Please try again.",
+            parent=auth_root,
+        )
+
+    auth_root.destroy()
+    return password
 
 
 class ApadanaApp(tk.Tk):
@@ -44,6 +94,16 @@ class ApadanaApp(tk.Tk):
         self.build_ui()
         self.poll_queue()
         self.after(200, self.refresh_installed)
+        self.protocol("WM_DELETE_WINDOW", self.on_close)
+
+    def on_close(self):
+        self.cached_sudo_password = None
+        if shutil.which("sudo"):
+            try:
+                subprocess.run(["sudo", "-k"], timeout=5)
+            except Exception:
+                pass
+        self.destroy()
 
     def build_ui(self):
         style = ttk.Style(self)
@@ -54,7 +114,7 @@ class ApadanaApp(tk.Tk):
         style.configure("Treeview", rowheight=24)
 
         self.title_label = ttk.Label(
-            self, text="Apadana v1.1 - Arshavir Mirzakhani", justify="center"
+            self, text="Apadana v1.2 - Arshavir Mirzakhani", justify="center"
         ).pack()
 
         notebook = ttk.Notebook(self)
@@ -346,7 +406,9 @@ class ApadanaApp(tk.Tk):
     def stop_progress(self):
         self.progress.stop()
 
-    def run_command(self, cmd_list, needs_root=False, description="", on_done=None):
+    def run_command(
+        self, cmd_list, needs_root=False, description="", on_done=None, _retry=False
+    ):
         if self.current_process is not None:
             messagebox.showwarning(
                 "Busy",
@@ -355,33 +417,50 @@ class ApadanaApp(tk.Tk):
             return
 
         password = None
+        final_cmd = cmd_list
         if needs_root:
-            cmd_list, needs_password = build_privileged_command(cmd_list)
+            final_cmd, needs_password = build_privileged_command(cmd_list)
             if needs_password:
-                password = self.cached_sudo_password or simpledialog.askstring(
-                    "Password required",
-                    "Enter your administrator (sudo) password:",
-                    show="*",
-                    parent=self,
-                )
-                if password is None:
-                    self.status_var.set("Cancelled: no password provided.")
-                    return
-                self.cached_sudo_password = password
+                # On a retry (previous attempt's cached password was wrong)
+                # always ask fresh instead of reusing the bad one.
+                if _retry or not self.cached_sudo_password:
+                    password = simpledialog.askstring(
+                        "Password required",
+                        "Enter your administrator (sudo) password:",
+                        show="*",
+                        parent=self,
+                    )
+                    if password is None:
+                        self.status_var.set("Cancelled: no password provided.")
+                        return
+                    self.cached_sudo_password = password
+                else:
+                    password = self.cached_sudo_password
 
-        self.log(f"\n$ {' '.join(cmd_list)}\n{'-'*60}\n")
+        self.log(f"\n$ {' '.join(final_cmd)}\n{'-'*60}\n")
         self.status_var.set(f"{description or 'Working'}...")
         self.start_progress()
         self.cancel_btn.config(state="normal")
 
         thread = threading.Thread(
             target=self.worker,
-            args=(cmd_list, password, description, on_done),
+            args=(final_cmd, password, description, on_done, cmd_list, needs_root),
             daemon=True,
         )
         thread.start()
 
-    def worker(self, cmd_list, password, description, on_done):
+    def worker(
+        self,
+        cmd_list,
+        password,
+        description,
+        on_done,
+        original_cmd_list=None,
+        needs_root=False,
+    ):
+        auth_failed = False
+        lock_error = False
+        retry_pending = False
         try:
             proc = subprocess.Popen(
                 cmd_list,
@@ -396,25 +475,79 @@ class ApadanaApp(tk.Tk):
             if password:
                 try:
                     stdin = proc.stdin
-
-                    if not stdin:
-                        raise
-
-                    stdin.write(password + "\n")
-                    stdin.flush()
-                    stdin.close()
+                    if stdin:
+                        stdin.write(password + "\n")
+                        stdin.flush()
+                        stdin.close()
                 except Exception:
                     pass
 
-            if not proc:
-                for line in str(proc.stdout):
+            # Stream output live as it's produced, instead of waiting for
+            # the process to exit first (the old code never read stdout at
+            # all, which could also deadlock on commands with lots of
+            # output once the OS pipe buffer filled up).
+            if proc.stdout:
+                for line in proc.stdout:
                     self.log(line)
+                    lower = line.lower()
+                    if password and (
+                        "incorrect password" in lower or "sorry, try again" in lower
+                    ):
+                        auth_failed = True
+                    if (
+                        "could not get lock" in lower
+                        or "resource temporarily unavailable" in lower
+                    ):
+                        lock_error = True
 
             proc.wait()
             code = proc.returncode
+            self.current_process = None
             self.log(f"\n{'-'*60}\nFinished with exit code {code}\n")
 
-            if code == 0:
+            if auth_failed:
+                # The cached password was wrong or stale (e.g. the user
+                # changed it since caching). Clear it and ask again, then
+                # automatically retry the same command once. We deliberately
+                # do NOT call on_done here (via retry_pending) since the
+                # operation hasn't actually completed yet.
+                self.cached_sudo_password = None
+                self.after(
+                    0,
+                    lambda: self.status_var.set(
+                        "Incorrect password — please try again."
+                    ),
+                )
+                if original_cmd_list is not None:
+                    self.after(
+                        0,
+                        lambda: self.run_command(
+                            original_cmd_list,
+                            needs_root=needs_root,
+                            description=description,
+                            on_done=on_done,
+                            _retry=True,
+                        ),
+                    )
+                retry_pending = True
+            elif lock_error and code != 0:
+                self.after(
+                    0,
+                    lambda: self.status_var.set(
+                        f"{description or 'Operation'} failed: package manager is locked."
+                    ),
+                )
+                self.after(
+                    0,
+                    lambda: messagebox.showerror(
+                        "Package Manager Locked",
+                        "Another program (or a background update check) is using "
+                        "apt/dpkg right now.\n\nClose other package managers "
+                        "(Software Updater, apt in another terminal, etc.) and "
+                        "try again.",
+                    ),
+                )
+            elif code == 0:
                 self.after(
                     0,
                     lambda: self.status_var.set(
@@ -462,10 +595,11 @@ class ApadanaApp(tk.Tk):
             )
         finally:
             self.current_process = None
-            self.after(0, lambda: self.cancel_btn.config(state="disabled"))
-            self.after(0, self.stop_progress)
-            if on_done:
-                self.after(0, on_done)
+            if not retry_pending:
+                self.after(0, lambda: self.cancel_btn.config(state="disabled"))
+                self.after(0, self.stop_progress)
+                if on_done:
+                    self.after(0, on_done)
 
     def cancel_current(self):
         if self.current_process is not None:
@@ -587,5 +721,19 @@ class ApadanaApp(tk.Tk):
 
 
 if __name__ == "__main__":
+    if not shutil.which("apt-get"):
+        _err_root = tk.Tk()
+        _err_root.withdraw()
+        messagebox.showerror(
+            "Unsupported System",
+            "Apadana requires 'apt-get' (Debian/Ubuntu-based systems) and it "
+            "was not found on this system.",
+        )
+        _err_root.destroy()
+        sys.exit(1)
+
+    verified_password = prompt_for_root_password()
     app = ApadanaApp()
+    if verified_password:
+        app.cached_sudo_password = verified_password
     app.mainloop()
